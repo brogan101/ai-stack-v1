@@ -64,12 +64,16 @@ export interface WorkspaceIndex {
   indexedAt: string;
   files: IndexedFile[];
   edges: DependencyEdge[];
+  fileCount: number;
+  symbolCount: number;
 }
 
 export interface ContextSearchResult {
   files: Array<IndexedFile & { score: number; matchedSymbols: Symbol[] }>;
+  sections: Array<{ file: IndexedFile & { score: number; matchedSymbols: Symbol[] }; excerpt: string }>;
   promptContext: string;
   totalTokenEstimate: number;
+  workspace: { workspaceName: string; rootPath: string };
 }
 
 export interface ReadFileResult {
@@ -120,7 +124,7 @@ function extractSymbols(sourceFile: ts.SourceFile): Symbol[] {
     } else if (ts.isTypeAliasDeclaration(node)) {
       symbols.push({ kind: "type", name: node.name.text, lineStart, lineEnd, exported });
     } else if (ts.isVariableStatement(node)) {
-      const isExported = !!(ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Export);
+      const isExported = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
       node.declarationList.declarations.forEach(decl => {
         if (ts.isIdentifier(decl.name)) {
           symbols.push({ kind: "variable", name: decl.name.text, lineStart, lineEnd, exported: isExported });
@@ -294,6 +298,7 @@ class WorkspaceContextServiceImpl {
       }
     }
 
+    const symbolCount = indexed.reduce((sum, f) => sum + f.symbols.length, 0);
     const index: WorkspaceIndex = {
       version: INDEX_VERSION,
       rootPath,
@@ -301,6 +306,8 @@ class WorkspaceContextServiceImpl {
       indexedAt: new Date().toISOString(),
       files: indexed,
       edges,
+      fileCount: indexed.length,
+      symbolCount,
     };
 
     await writeFile(indexPath, JSON.stringify(index), "utf-8");
@@ -318,7 +325,7 @@ class WorkspaceContextServiceImpl {
   async search(query: string, workspacePath?: string, maxFiles = 8, maxTokens = 8000): Promise<ContextSearchResult> {
     const summaries = await this.getWorkspaceSummaries();
     const target    = workspacePath ?? summaries[0]?.rootPath;
-    if (!target) return { files: [], promptContext: "", totalTokenEstimate: 0 };
+    if (!target) return { files: [], sections: [], promptContext: "", totalTokenEstimate: 0, workspace: { workspaceName: "", rootPath: "" } };
 
     const index     = await this.indexWorkspace(target);
     const tokens    = this.tokenize(query);
@@ -345,6 +352,7 @@ class WorkspaceContextServiceImpl {
       .slice(0, maxFiles);
 
     const parts: string[] = [];
+    const sections: ContextSearchResult["sections"] = [];
     let totalTokenEstimate = 0;
     for (const file of scored) {
       try {
@@ -353,11 +361,18 @@ class WorkspaceContextServiceImpl {
         const tokenEst = Math.round(excerpt.length / 4);
         if (totalTokenEstimate + tokenEst > maxTokens) break;
         parts.push(`// ${file.relativePath}\n${excerpt}`);
+        sections.push({ file, excerpt });
         totalTokenEstimate += tokenEst;
       } catch { /* skip unreadable */ }
     }
 
-    return { files: scored, promptContext: parts.join("\n\n---\n\n"), totalTokenEstimate };
+    return {
+      files: scored,
+      sections,
+      promptContext: parts.join("\n\n---\n\n"),
+      totalTokenEstimate,
+      workspace: { workspaceName: index.workspaceName, rootPath: index.rootPath },
+    };
   }
 
   async readWorkspaceFile(filePath: string, workspacePath?: string): Promise<ReadFileResult> {
@@ -376,9 +391,10 @@ class WorkspaceContextServiceImpl {
   async applyReadWriteVerify(filePath: string, updatedContent: string, workspacePath: string): Promise<ApplyResult> {
     const original = await readFile(filePath, "utf-8").catch(() => "");
     const changes  = diffLines(original, updatedContent);
+    interface DiffChange { added?: boolean; removed?: boolean; value: string; }
     const diffText = changes
-      .filter(c => c.added || c.removed)
-      .map(c => c.added ? `+ ${c.value}` : `- ${c.value}`)
+      .filter((c: DiffChange) => c.added || c.removed)
+      .map((c: DiffChange) => c.added ? `+ ${c.value}` : `- ${c.value}`)
       .join("");
 
     // Write with automatic backup
@@ -430,6 +446,22 @@ class WorkspaceContextServiceImpl {
         .split(/[^a-z0-9_.:/-]+/)
         .filter(t => t.length >= 2),
     )];
+  }
+
+  async getStatus(): Promise<{ workspaces: WorkspaceSummary[]; totalFiles: number; totalSymbols: number }> {
+    const workspaces = await this.getWorkspaceSummaries();
+    const totalFiles = workspaces.reduce((sum, w) => sum + w.fileCount, 0);
+    let totalSymbols = 0;
+    for (const [, index] of this.indexCache) {
+      totalSymbols += index.symbolCount;
+    }
+    return { workspaces, totalFiles, totalSymbols };
+  }
+
+  async refreshKnownWorkspaces(trigger: string): Promise<WorkspaceSummary[]> {
+    thoughtLog.publish({ category: "workspace", title: "Refresh Workspaces", message: `Refreshing known workspaces (trigger: ${trigger})` });
+    this.indexCache.clear();
+    return this.getWorkspaceSummaries();
   }
 
   invalidate(rootPath?: string): void {

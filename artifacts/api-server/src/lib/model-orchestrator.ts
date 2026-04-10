@@ -22,7 +22,7 @@ import { taskQueue } from "./task-queue.js";
 import { writeManagedJson } from "./snapshot-manager.js";
 import {
   getActiveGatewayBaseUrl, buildDistributedProxyHeaders,
-  loadDistributedNodeConfig, getStreamingBufferProfile,
+  getDistributedNodeConfig, getStreamingBufferProfile,
   LatencyOptimizedTokenBuffer,
 } from "./network-proxy.js";
 
@@ -215,7 +215,7 @@ async function saveGatewayState(
 
 // ── Distributed fetch ─────────────────────────────────────────────────────────
 
-function mergeHeaders(left?: HeadersInit, right?: HeadersInit): Headers {
+function mergeHeaders(left?: RequestInit["headers"], right?: RequestInit["headers"]): Headers {
   const h = new Headers(left ?? {});
   new Headers(right ?? {}).forEach((v, k) => h.set(k, v));
   return h;
@@ -225,7 +225,7 @@ export async function distributedFetchJson<T = unknown>(
   relativePath: string, init?: RequestInit, timeoutMs?: number,
 ): Promise<T> {
   const [baseUrl, proxyHeaders, networkConfig] = await Promise.all([
-    getActiveGatewayBaseUrl(), buildDistributedProxyHeaders(), loadDistributedNodeConfig(),
+    getActiveGatewayBaseUrl(), buildDistributedProxyHeaders(), getDistributedNodeConfig(),
   ]);
   return fetchJson<T>(
     `${baseUrl}${relativePath}`,
@@ -238,7 +238,7 @@ async function distributedFetch(
   relativePath: string, init?: RequestInit, timeoutMs?: number,
 ): Promise<globalThis.Response> {
   const [baseUrl, proxyHeaders, networkConfig] = await Promise.all([
-    getActiveGatewayBaseUrl(), buildDistributedProxyHeaders(), loadDistributedNodeConfig(),
+    getActiveGatewayBaseUrl(), buildDistributedProxyHeaders(), getDistributedNodeConfig(),
   ]);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs ?? networkConfig.remoteRequestTimeoutMs);

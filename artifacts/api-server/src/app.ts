@@ -1,7 +1,10 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import pinoHttp from "pino-http";
+import type { Options as PinoHttpOptions } from "pino-http";
+// pino-http ships CJS main + ESM types — NodeNext interop requires this cast
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const pinoHttp = require("pino-http") as (opts: PinoHttpOptions) => ReturnType<typeof import("pino-http").default>;
 import { logger } from "./lib/logger.js";
 import { thoughtLog } from "./lib/thought-log.js";
 import { stateOrchestrator } from "./lib/state-orchestrator.js";
@@ -14,14 +17,10 @@ app.use(
   pinoHttp({
     logger,
     serializers: {
-      req(req) {
-        return {
-          id: req.id,
-          method: req.method,
-          url: req.url?.split("?")[0],
-        };
+      req(req: { id: unknown; method: string; url?: string }) {
+        return { id: req.id, method: req.method, url: req.url?.split("?")[0] };
       },
-      res(res) {
+      res(res: { statusCode: number }) {
         return { statusCode: res.statusCode };
       },
     },

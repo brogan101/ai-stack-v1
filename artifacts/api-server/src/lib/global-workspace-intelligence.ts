@@ -89,8 +89,9 @@ async function loadPreferredCodingModel(): Promise<string> {
   const fallback = "qwen2.5-coder:7b";
   try {
     const settings = await loadSettings();
-    if ((settings as Record<string, unknown>)["defaultCodingModel"] && typeof (settings as Record<string, unknown>)["defaultCodingModel"] === "string") {
-      const model = ((settings as Record<string, unknown>)["defaultCodingModel"] as string).trim();
+    const s = settings as unknown as Record<string, unknown>;
+    if (s["defaultCodingModel"] && typeof s["defaultCodingModel"] === "string") {
+      const model = (s["defaultCodingModel"] as string).trim();
       if (model) return model;
     }
   } catch { /* ignore */ }

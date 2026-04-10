@@ -6,12 +6,12 @@ node_modules/
 # Build outputs
 dist/
 build/
+*.tsbuildinfo
+
+# Source maps (large, not useful in repo)
 *.mjs.map
 *.js.map
-
-# TypeScript cache
-*.tsbuildinfo
-tsconfig.tsbuildinfo
+*.d.ts.map
 
 # Environment files
 .env
@@ -20,26 +20,37 @@ tsconfig.tsbuildinfo
 
 # Logs
 *.log
-pino-*.log
 logs/
 
-# OS
+# Runtime data
+runtime/
+artifacts/api-server/WorldGUI/
+
+# OS junk
 .DS_Store
 Thumbs.db
 desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
 
 # Editor
-.vscode/
 .idea/
 *.swp
 *.swo
+*.suo
+*.user
 
 # pnpm
 .pnpm-store/
-pnpm-lock.yaml
 
 # Vite cache
 .vite/
 
-# Claude Code
+# Temporary files
+*.bak
+*.tmp
+*.temp
+"New Text Document.txt"
+
+# Claude Code local settings (not committed)
 .claude/settings.local.json

@@ -2,15 +2,17 @@
   "name": "local-ai",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev:api": "pnpm --filter api-server dev",
     "dev:ui": "pnpm --filter localai-control-center dev",
     "start:api": "pnpm --filter api-server start",
-    "build": "pnpm -r --filter=!@workspace/api-spec build",
-    "typecheck": "pnpm -r --filter=!@workspace/api-spec typecheck",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "clean": "pnpm -r exec rm -rf dist && rm -rf node_modules",
     "install:all": "pnpm install"
-  },
-  "pnpm": {
-    "overrides": {}
   }
 }
