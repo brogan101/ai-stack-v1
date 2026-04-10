@@ -3,21 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm run typecheck && pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
     "dev:api": "pnpm --filter api-server dev",
     "dev:ui": "pnpm --filter localai-control-center dev",
-    "clean": "pnpm -r exec rm -rf dist node_modules"
+    "start:api": "pnpm --filter api-server start",
+    "build": "pnpm -r --filter=!@workspace/api-spec build",
+    "typecheck": "pnpm -r --filter=!@workspace/api-spec typecheck",
+    "install:all": "pnpm install"
   },
   "pnpm": {
     "overrides": {}
-  },
-  "workspaces": [
-    "artifacts/api-server",
-    "artifacts/localai-control-center",
-    "lib/api-client-react",
-    "lib/api-zod",
-    "lib/api-spec",
-    "lib/db"
-  ]
+  }
 }
