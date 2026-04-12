@@ -3,27 +3,30 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 
-const API_TARGET =
-  process.env["API_PROXY_TARGET"] ?? "http://localhost:3001";
+const API_PORT = Number(process.env.API_PORT ?? 3001);
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  base: "/",
+  plugins: [
+    react(),
+    tailwindcss(),
+  ],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      // Internal path alias — @/... resolves to src/
+      "@": path.resolve(import.meta.dirname, "src"),
+      // Sovereign wiring — @workspace/api-client-react resolves to the local lib
+      "@workspace/api-client-react": path.resolve(
+        import.meta.dirname,
+        "../../lib/api-client-react/src/index.ts",
+      ),
     },
+    dedupe: ["react", "react-dom"],
   },
-  server: {
-    port: 5173,
-    proxy: {
-      "/api": {
-        target: API_TARGET,
-        changeOrigin: true,
-      },
-    },
-  },
+  root: path.resolve(import.meta.dirname),
   build: {
-    outDir: "dist/public",
+    outDir: path.resolve(import.meta.dirname, "dist/public"),
+    emptyOutDir: true,
     rollupOptions: {
       output: {
         manualChunks: {
@@ -37,5 +40,21 @@ export default defineConfig({
         },
       },
     },
+  },
+  server: {
+    port: 5173,
+    host: "0.0.0.0",
+    proxy: {
+      // All /api/* requests proxy to the Sovereign API server on port 3001
+      "/api": {
+        target: `http://localhost:${API_PORT}`,
+        changeOrigin: true,
+        secure: false,
+      },
+    },
+  },
+  preview: {
+    port: 5173,
+    host: "0.0.0.0",
   },
 });

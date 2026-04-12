@@ -1,15 +1,14 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import type { Options as PinoHttpOptions } from "pino-http";
-// pino-http ships CJS main + ESM types — NodeNext interop requires this cast
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const pinoHttp = require("pino-http") as (opts: PinoHttpOptions) => ReturnType<typeof import("pino-http").default>;
+import pinoHttpModule from "pino-http";
 import { logger } from "./lib/logger.js";
 import { thoughtLog } from "./lib/thought-log.js";
 import { stateOrchestrator } from "./lib/state-orchestrator.js";
 import { distributedNodeAuthMiddleware, startDistributedNodeHeartbeat } from "./lib/network-proxy.js";
 import routes from "./routes/index.js";
+
+const pinoHttp = pinoHttpModule as unknown as typeof import("pino-http").default;
 
 const app = express();
 

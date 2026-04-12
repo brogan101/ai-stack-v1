@@ -11,6 +11,7 @@ import { writeManagedJson } from "../lib/snapshot-manager.js";
 import { invokeSystemKillSwitch, robustCleanup, readSystemIntegrationStatus } from "../lib/windows-system.js";
 import { taskQueue } from "../lib/task-queue.js";
 import { thoughtLog } from "../lib/thought-log.js";
+import { getUniversalGatewayTags } from "../lib/model-orchestrator.js";
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -82,6 +83,74 @@ function formatBytes(bytes: number): string {
   if (bytes >= 1e3) return (bytes / 1e3).toFixed(1) + " KB";
   return bytes + " B";
 }
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  }
+
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  return `${days}d ${hours}h`;
+}
+
+router.get("/system/summary", async (_req, res) => {
+  const gateway = await getUniversalGatewayTags();
+  const uptimeSeconds = process.uptime();
+  const startedAt = new Date(Date.now() - uptimeSeconds * 1000).toISOString();
+  const usedBytes =
+    gateway.vramGuard.totalBytes !== undefined && gateway.vramGuard.freeBytes !== undefined
+      ? Math.max(0, gateway.vramGuard.totalBytes - gateway.vramGuard.freeBytes)
+      : undefined;
+
+  return res.json({
+    os: {
+      platform: os.platform(),
+      release: os.release(),
+      arch: os.arch(),
+      hostname: os.hostname(),
+      label: `${os.platform()} ${os.release()} (${os.arch()})`,
+    },
+    node: {
+      version: process.version,
+      pid: process.pid,
+    },
+    uptime: {
+      seconds: uptimeSeconds,
+      human: formatDuration(uptimeSeconds),
+      startedAt,
+    },
+    ollama: {
+      reachable: gateway.ollamaReachable,
+      installedModels: gateway.models.length,
+      runningModels: gateway.models.filter((model) => model.isRunning).length,
+      totalRunningVram: gateway.totalRunningVram,
+      totalRunningVramFormatted: gateway.totalRunningVramFormatted,
+    },
+    vram: {
+      mode: gateway.vramGuard.mode,
+      status: gateway.vramGuard.status,
+      provider: gateway.vramGuard.provider,
+      reason: gateway.vramGuard.reason,
+      gpuName: gateway.vramGuard.gpuName,
+      totalBytes: gateway.vramGuard.totalBytes,
+      totalFormatted: formatBytes(gateway.vramGuard.totalBytes ?? 0),
+      freeBytes: gateway.vramGuard.freeBytes,
+      freeFormatted: formatBytes(gateway.vramGuard.freeBytes ?? 0),
+      usedBytes,
+      usedFormatted: formatBytes(usedBytes ?? 0),
+      safeBudgetBytes: gateway.vramGuard.safeBudgetBytes,
+      safeBudgetFormatted: formatBytes(gateway.vramGuard.safeBudgetBytes),
+      reserveBytes: gateway.vramGuard.reserveBytes,
+      reserveFormatted: formatBytes(gateway.vramGuard.reserveBytes),
+      detectedAt: gateway.vramGuard.detectedAt,
+    },
+  });
+});
 
 router.get("/system/diagnostics", async (_req, res) => {
   const items: any[] = [];

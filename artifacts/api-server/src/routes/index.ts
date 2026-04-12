@@ -20,6 +20,7 @@ import kernel from "./kernel.js";
 import observability from "./observability.js";
 import tasks from "./tasks.js";
 import rollback from "./rollback.js";
+import features from "./features.js";
 
 const router = Router();
 
@@ -44,5 +45,6 @@ router.use(kernel);
 router.use(observability);
 router.use(tasks);
 router.use(rollback);
+router.use(features);
 
 export default router;

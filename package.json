@@ -1,5 +1,5 @@
 {
-  "name": "local-ai",
+  "name": "ai-stack-v1",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@9.15.9",
@@ -7,12 +7,16 @@
     "node": ">=20.0.0"
   },
   "scripts": {
+    "dev": "pnpm --parallel --filter api-server --filter localai-control-center dev",
     "dev:api": "pnpm --filter api-server dev",
     "dev:ui": "pnpm --filter localai-control-center dev",
+    "start": "pnpm --filter api-server start",
     "start:api": "pnpm --filter api-server start",
+    "build:api": "pnpm --filter api-server build",
+    "build:ui": "pnpm --filter localai-control-center build",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "clean": "pnpm -r exec rm -rf dist && rm -rf node_modules",
+    "clean": "pnpm -r exec powershell -NoProfile -Command \"if (Test-Path dist) { Remove-Item -Recurse -Force dist }; if (Test-Path *.tsbuildinfo) { Remove-Item -Force *.tsbuildinfo }\"",
     "install:all": "pnpm install"
   }
 }

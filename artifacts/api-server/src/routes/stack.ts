@@ -391,4 +391,48 @@ router.get("/stack/github-status", async (_req, res) => {
   }
 });
 
+// ── Context Profiles (Sovereign model-context memory slots) ─────────────────
+const CONTEXT_PROFILES_FILE = path.join(TOOLS_DIR, "context-profiles.json");
+
+const DEFAULT_CONTEXT_PROFILES = [
+  { id: "balanced", name: "Balanced", description: "Default 8k context — good for most tasks", numCtx: 8192, isActive: true },
+  { id: "extended", name: "Extended", description: "32k context — long documents & large codebases", numCtx: 32768, isActive: false },
+  { id: "mega", name: "Mega Context", description: "128k context — max memory, higher VRAM usage", numCtx: 131072, isActive: false },
+  { id: "fast", name: "Fast / Slim", description: "2k context — lightning fast, autocomplete optimised", numCtx: 2048, isActive: false },
+];
+
+async function loadContextProfiles(): Promise<{ profiles: any[]; activeProfileId?: string }> {
+  try {
+    const { readFile } = await import("fs/promises");
+    if (existsSync(CONTEXT_PROFILES_FILE)) {
+      return JSON.parse(await readFile(CONTEXT_PROFILES_FILE, "utf-8"));
+    }
+  } catch {}
+  return { profiles: DEFAULT_CONTEXT_PROFILES, activeProfileId: "balanced" };
+}
+
+router.get("/stack/context-profiles", async (_req, res) => {
+  try {
+    const data = await loadContextProfiles();
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(500).json({ profiles: DEFAULT_CONTEXT_PROFILES, activeProfileId: "balanced" });
+  }
+});
+
+router.put("/stack/context-profiles", async (req, res) => {
+  try {
+    const { profileId } = req.body as { profileId: string };
+    const data = await loadContextProfiles();
+    const profiles = data.profiles.map((p: any) => ({ ...p, isActive: p.id === profileId }));
+    const updated = { profiles, activeProfileId: profileId };
+    const { writeFile, mkdir: mkdirFs } = await import("fs/promises");
+    await mkdirFs(path.dirname(CONTEXT_PROFILES_FILE), { recursive: true });
+    await writeFile(CONTEXT_PROFILES_FILE, JSON.stringify(updated, null, 2), "utf-8");
+    return res.json({ success: true, message: `Context profile set to '${profileId}'` });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, message: "Failed to update context profile", details: err.message });
+  }
+});
+
 export default router;
