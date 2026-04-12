@@ -12,8 +12,12 @@ import {
 } from "fs/promises";
 import os   from "os";
 import path from "path";
+import { promisify } from "util";
+import { exec }      from "child_process";
 import ts   from "typescript";
 import { diffLines } from "diff";
+
+const execAsync = promisify(exec);
 
 import { toolsRoot } from "./runtime.js";
 import { logger }    from "./logger.js";
@@ -96,6 +100,15 @@ export interface ApplyResult {
   verification: VerificationResult;
 }
 
+export interface MultiFileRefactorResult {
+  success: boolean;
+  /** Per-file apply results */
+  results: Array<{ filePath: string; result: ApplyResult }>;
+  /** Files that were rolled back due to verification failure */
+  rolledBack: string[];
+  message: string;
+}
+
 // ── AST symbol extraction ─────────────────────────────────────────────────────
 
 function extractSymbols(sourceFile: ts.SourceFile): Symbol[] {
@@ -174,7 +187,7 @@ function extractImports(sourceFile: ts.SourceFile, rootPath: string, filePath: s
 
 // ── File indexing ─────────────────────────────────────────────────────────────
 
-const INDEXABLE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
+const INDEXABLE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py"]);
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", ".next", ".nuxt", "coverage", ".cache", ".vite", "__pycache__"]);
 
 async function shouldIndex(filePath: string): Promise<boolean> {
@@ -335,9 +348,9 @@ class WorkspaceContextServiceImpl {
         const matchedSymbols: Symbol[] = [];
         const lp = file.relativePath.toLowerCase();
         for (const token of tokens) {
-          if (lp.includes(token))                    score += 12;
+          if (lp.includes(token))                         score += 12;
           if (file.preview.toLowerCase().includes(token)) score += 2;
-          if (file.searchText.includes(token))       score += 3;
+          if (file.searchText.includes(token))            score += 3;
           for (const sym of file.symbols) {
             if (sym.name.toLowerCase().includes(token)) {
               matchedSymbols.push(sym);
@@ -351,19 +364,65 @@ class WorkspaceContextServiceImpl {
       .sort((a, b) => b.score - a.score)
       .slice(0, maxFiles);
 
+    // ── Sliding Window context pruner ─────────────────────────────────────────
+    // For each candidate file, use a sliding window over its lines to extract
+    // only the most relevant excerpt that fits within the token budget, rather
+    // than blindly taking the first N characters. This ensures large files do
+    // not crowd out lower-ranked but more relevant files.
+    const WINDOW_LINES   = 80;   // lines per sliding window
+    const WINDOW_OVERLAP = 10;   // overlap between windows to avoid split context
+    const CHARS_PER_TOKEN = 4;
+
     const parts: string[] = [];
     const sections: ContextSearchResult["sections"] = [];
     let totalTokenEstimate = 0;
+
     for (const file of scored) {
+      if (totalTokenEstimate >= maxTokens) break;
+      const remainingTokens = maxTokens - totalTokenEstimate;
+
       try {
         const content = await readFile(file.path, "utf-8");
-        const excerpt = content.slice(0, maxTokens * 4);
-        const tokenEst = Math.round(excerpt.length / 4);
-        if (totalTokenEstimate + tokenEst > maxTokens) break;
-        parts.push(`// ${file.relativePath}\n${excerpt}`);
+        const lines   = content.split("\n");
+
+        // If the whole file fits in the remaining budget, use it entirely
+        const fullTokenEst = Math.round(content.length / CHARS_PER_TOKEN);
+        if (fullTokenEst <= remainingTokens) {
+          parts.push(`// ${file.relativePath}\n${content}`);
+          sections.push({ file, excerpt: content });
+          totalTokenEstimate += fullTokenEst;
+          continue;
+        }
+
+        // Sliding window: score each window by token-match density, pick best
+        let bestWindow = "";
+        let bestWindowScore = -1;
+        const step = WINDOW_LINES - WINDOW_OVERLAP;
+
+        for (let start = 0; start < lines.length; start += step) {
+          const windowLines  = lines.slice(start, start + WINDOW_LINES);
+          const windowText   = windowLines.join("\n");
+          const windowLower  = windowText.toLowerCase();
+          let windowScore    = 0;
+          for (const token of tokens) {
+            // Count occurrences for density scoring
+            let idx = 0;
+            while ((idx = windowLower.indexOf(token, idx)) !== -1) { windowScore++; idx++; }
+          }
+          if (windowScore > bestWindowScore) {
+            bestWindowScore = windowScore;
+            bestWindow      = windowText;
+          }
+        }
+
+        // Trim the best window to the remaining token budget
+        const maxChars = remainingTokens * CHARS_PER_TOKEN;
+        const excerpt  = bestWindow.slice(0, maxChars);
+        const tokenEst = Math.round(excerpt.length / CHARS_PER_TOKEN);
+        parts.push(`// ${file.relativePath} (window)\n${excerpt}`);
         sections.push({ file, excerpt });
         totalTokenEstimate += tokenEst;
-      } catch { /* skip unreadable */ }
+      } catch { /* skip unreadable files */ }
     }
 
     return {
@@ -385,7 +444,8 @@ class WorkspaceContextServiceImpl {
   }
 
   /**
-   * READ-WRITE-VERIFY loop: writes the updated content, runs tsc diagnostics,
+   * READ-WRITE-VERIFY loop: writes the updated content, runs syntax diagnostics
+   * (TypeScript compiler API for .ts/.tsx, `python -m py_compile` for .py),
    * and rolls back on failure.
    */
   async applyReadWriteVerify(filePath: string, updatedContent: string, workspacePath: string): Promise<ApplyResult> {
@@ -400,18 +460,21 @@ class WorkspaceContextServiceImpl {
     // Write with automatic backup
     await writeManagedFile(filePath, updatedContent);
 
-    // Verify with tsc
-    const verification = await this.verifyWithTypeScript(filePath, workspacePath);
+    // Verify: pick verifier based on file extension
+    const ext = path.extname(filePath).toLowerCase();
+    const verification = ext === ".py"
+      ? await this.verifyWithPython(filePath)
+      : await this.verifyWithTypeScript(filePath, workspacePath);
 
     if (!verification.success) {
       // Rollback
       await writeManagedFile(filePath, original, { backup: false });
       thoughtLog.publish({
         level: "warning", category: "workspace", title: "Verification Failed — Rolled Back",
-        message: `TypeScript verification failed for ${path.basename(filePath)}. Changes rolled back.`,
+        message: `Syntax verification failed for ${path.basename(filePath)}. Changes rolled back.`,
         metadata: { filePath, diagnostics: verification.diagnostics },
       });
-      return { success: false, diff: diffText, message: "TypeScript diagnostics failed — changes rolled back.", verification };
+      return { success: false, diff: diffText, message: "Syntax diagnostics failed — changes rolled back.", verification };
     }
 
     thoughtLog.publish({
@@ -420,6 +483,72 @@ class WorkspaceContextServiceImpl {
       metadata: { filePath },
     });
     return { success: true, diff: diffText, message: "Changes applied and verified.", verification };
+  }
+
+  /**
+   * Multi-file refactor: applies each file atomically. If any file fails
+   * verification, ALL successfully written files are rolled back to their
+   * originals before this method returns. Provides true transactional safety.
+   */
+  async applyMultiFileRefactor(
+    changes: Record<string, string>,   // { absoluteFilePath: newContent }
+    workspacePath: string,
+  ): Promise<MultiFileRefactorResult> {
+    const filePaths  = Object.keys(changes);
+    const originals  = new Map<string, string>();
+    const results: MultiFileRefactorResult["results"] = [];
+    const rolledBack: string[] = [];
+
+    thoughtLog.publish({
+      category: "workspace", title: "Multi-File Refactor Started",
+      message: `Applying ${filePaths.length} file(s) with atomic rollback protection.`,
+      metadata: { files: filePaths.map(f => path.relative(workspacePath, f)) },
+    });
+
+    // Phase 1 — snapshot originals
+    for (const fp of filePaths) {
+      originals.set(fp, await readFile(fp, "utf-8").catch(() => ""));
+    }
+
+    // Phase 2 — apply each file
+    let firstFailure: string | null = null;
+    for (const fp of filePaths) {
+      const result = await this.applyReadWriteVerify(fp, changes[fp]!, workspacePath);
+      results.push({ filePath: fp, result });
+      if (!result.success && firstFailure === null) {
+        firstFailure = fp;
+      }
+    }
+
+    // Phase 3 — if any file failed, roll back all previously written files
+    if (firstFailure !== null) {
+      for (const { filePath, result } of results) {
+        if (result.success) {
+          // This file was successfully written but another failed — roll it back
+          const orig = originals.get(filePath) ?? "";
+          await writeManagedFile(filePath, orig, { backup: false });
+          rolledBack.push(filePath);
+        }
+      }
+      thoughtLog.publish({
+        level: "error", category: "workspace", title: "Multi-File Refactor — Full Rollback",
+        message: `Refactor failed at ${path.basename(firstFailure)}. Rolled back ${rolledBack.length} file(s).`,
+        metadata: { failedFile: firstFailure, rolledBack },
+      });
+      return {
+        success: false,
+        results,
+        rolledBack,
+        message: `Refactor failed at ${path.basename(firstFailure)} — all changes rolled back.`,
+      };
+    }
+
+    thoughtLog.publish({
+      category: "workspace", title: "Multi-File Refactor Complete",
+      message: `Successfully applied and verified ${filePaths.length} file(s).`,
+      metadata: { files: filePaths.map(f => path.relative(workspacePath, f)) },
+    });
+    return { success: true, results, rolledBack: [], message: `${filePaths.length} file(s) applied and verified.` };
   }
 
   private async verifyWithTypeScript(filePath: string, workspacePath: string): Promise<VerificationResult> {
@@ -437,6 +566,28 @@ class WorkspaceContextServiceImpl {
     } catch (error) {
       logger.warn({ err: error, filePath }, "TypeScript verification threw — treating as success");
       return { success: true, diagnostics: [] };
+    }
+  }
+
+  /**
+   * Python syntax check via `python -m py_compile <file>`.
+   * Treats "python not found" as a pass (optional dependency).
+   */
+  private async verifyWithPython(filePath: string): Promise<VerificationResult> {
+    try {
+      await execAsync(`python -m py_compile "${filePath}"`, { timeout: 15_000 });
+      return { success: true, diagnostics: [] };
+    } catch (error: unknown) {
+      // If python is not installed, don't block the write
+      const msg = (error as { stderr?: string; message?: string }).stderr
+        ?? (error as { message?: string }).message
+        ?? String(error);
+      if (msg.includes("not found") || msg.includes("is not recognized") || msg.includes("No such file")) {
+        logger.warn({ filePath }, "python not found — skipping py_compile verification");
+        return { success: true, diagnostics: ["python not available — syntax check skipped"] };
+      }
+      const lines = msg.split("\n").filter(Boolean);
+      return { success: false, diagnostics: lines };
     }
   }
 

@@ -25,8 +25,9 @@ export default function UpdatesPage() {
   const { toast } = useToast();
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data, isLoading, refetch, isFetching } = useCheckUpdates({
-    query: { staleTime: 1000 * 60 * 5 },
+    query: { staleTime: 1000 * 60 * 5 } as any,
   });
 
   const runUpdates = useRunUpdates({
@@ -71,7 +72,7 @@ export default function UpdatesPage() {
         <div className="flex items-center gap-2">
           {selected.size > 0 && (
             <Button
-              onClick={() => runUpdates.mutate({ itemIds: Array.from(selected) })}
+              onClick={() => runUpdates.mutate({ data: { itemIds: Array.from(selected) } })}
               disabled={runUpdates.isPending}
               className="bg-primary/90 hover:bg-primary"
             >

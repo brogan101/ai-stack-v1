@@ -6,6 +6,9 @@ import { logger } from "./lib/logger.js";
 import { thoughtLog } from "./lib/thought-log.js";
 import { stateOrchestrator } from "./lib/state-orchestrator.js";
 import { distributedNodeAuthMiddleware, startDistributedNodeHeartbeat } from "./lib/network-proxy.js";
+import { startWorkspaceContextService } from "./lib/code-context.js";
+import { initKnowledgeVault } from "./lib/knowledge-vault.js";
+import { startOllamaSentinel } from "./lib/self-healing.js";
 import routes from "./routes/index.js";
 
 const pinoHttp = pinoHttpModule as unknown as typeof import("pino-http").default;
@@ -36,10 +39,16 @@ app.use("/api", routes);
 // Initialise background services
 void stateOrchestrator.hydrate();
 startDistributedNodeHeartbeat();
+
+// Sovereign subsystems
+startWorkspaceContextService();
+void initKnowledgeVault();
+startOllamaSentinel();
+
 thoughtLog.publish({
   category: "kernel",
   title: "API Startup",
-  message: "Express application bootstrapped and core services initialized",
+  message: "Express application bootstrapped — Sovereign subsystems online (Context Engine, Knowledge Vault, Ollama Sentinel).",
 });
 
 export default app;

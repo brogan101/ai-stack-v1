@@ -6,16 +6,14 @@
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "outDir": "dist",
-    "rootDir": "src",
-    "composite": true,
-    "noEmit": false,
+    "noEmit": true,
     "useDefineForClassFields": true,
+    "types": ["vite/client"],
     "paths": {
       "@/*": ["./src/*"],
       "@workspace/api-client-react": ["../../lib/api-client-react/src/index.ts"]
     }
   },
-  "include": ["src/**/*", "vite.config.ts"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }

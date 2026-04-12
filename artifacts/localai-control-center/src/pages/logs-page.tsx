@@ -25,9 +25,10 @@ export default function LogsPage() {
   const [filterLevel, setFilterLevel] = useState<string>("all");
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data, isLoading, refetch, isFetching, dataUpdatedAt } = useGetSystemLogs(
     { source, lines },
-    { query: { refetchInterval: 10000, staleTime: 5000 } }
+    { query: { refetchInterval: 10000, staleTime: 5000 } as any }
   );
 
   useEffect(() => {

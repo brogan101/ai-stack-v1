@@ -146,7 +146,7 @@ export default function ContinuePage() {
   });
 
   const installPack = (pack: typeof CURATED_RULE_PACKS[0]) => {
-    saveRule.mutate({ filename: pack.filename, content: pack.content });
+    saveRule.mutate({ data: { filename: pack.filename, content: pack.content } });
     toast({ title: `Installing "${pack.name}"...`, description: pack.filename });
   };
 
@@ -291,7 +291,7 @@ export default function ContinuePage() {
                   />
                   <div className="flex gap-2">
                     <Button
-                      onClick={() => saveRule.mutate({ filename: editingRule.filename, content: editingRule.content })}
+                      onClick={() => saveRule.mutate({ data: { filename: editingRule.filename, content: editingRule.content } })}
                       disabled={saveRule.isPending}
                     >
                       <Save className="w-4 h-4 mr-2" />

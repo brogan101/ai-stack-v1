@@ -10,6 +10,8 @@ import {
   queueUniversalModelPull,
   unloadOllamaModel,
   getRunningGatewayModels,
+  distributedFetchJson,
+  routeModelForMessages,
 } from "../lib/model-orchestrator.js";
 import { workspaceContextService } from "../lib/code-context.js";
 import { writeManagedJson } from "../lib/snapshot-manager.js";
@@ -351,6 +353,133 @@ router.post("/chat/command", async (req, res) => {
     success: false,
     message: `Unknown command: ${command}. Type /help to see available commands.`,
   });
+});
+
+/**
+ * POST /chat/vision
+ *
+ * Multimodal image analysis via Ollama's `images` field.
+ * Automatically routes to the best vision-capable model available.
+ *
+ * Request body:
+ *   {
+ *     prompt:    string            — text question / instruction
+ *     images:    string[]          — base64-encoded image data (no data URI prefix needed)
+ *     model?:    string            — optional override; defaults to auto-selected vision model
+ *     analysis?: "desired_vs_actual" | "describe" | "ocr" | "diagnose"
+ *                                 — hint that prefixes the system prompt for common use cases
+ *   }
+ *
+ * Response:
+ *   { success, model, route, message, analysisType }
+ */
+router.post("/chat/vision", async (req, res) => {
+  const body = typeof req.body === "object" && req.body !== null ? req.body : {};
+  const prompt    = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  const model     = typeof body.model  === "string" ? body.model.trim()  : "";
+  const analysis  = typeof body.analysis === "string" ? body.analysis as string : "describe";
+  const rawImages: unknown[] = Array.isArray(body.images) ? body.images : [];
+
+  if (!prompt) {
+    return res.status(400).json({ success: false, message: "prompt required" });
+  }
+  if (rawImages.length === 0) {
+    return res.status(400).json({ success: false, message: "images array required (at least one base64 image)" });
+  }
+
+  // Strip data URI prefix if present (e.g., "data:image/png;base64,...")
+  const images: string[] = rawImages
+    .filter((img): img is string => typeof img === "string")
+    .map(img => img.includes(",") ? img.split(",")[1]! : img);
+
+  if (images.length === 0) {
+    return res.status(400).json({ success: false, message: "images must be base64 strings" });
+  }
+
+  // Build a system prompt tailored to the analysis type
+  const systemPrompts: Record<string, string> = {
+    desired_vs_actual:
+      "You are a visual QA agent. The user provides a screenshot or photo. " +
+      "Compare what is visible (Actual) against what the user describes as expected (Desired). " +
+      "List discrepancies clearly and suggest fixes.",
+    describe:
+      "You are a vision assistant. Describe the image in detail, noting layout, colours, text, and any notable elements.",
+    ocr:
+      "You are an OCR agent. Extract and return all text visible in the image, preserving structure where possible. " +
+      "Return only the extracted text, nothing else.",
+    diagnose:
+      "You are a technical diagnostics assistant. Analyze the image for errors, warnings, or anomalies " +
+      "(stack traces, UI glitches, charts, logs). Explain what you find and suggest remediation.",
+  };
+
+  const systemContent = systemPrompts[analysis] ?? systemPrompts["describe"]!;
+
+  // Vision messages use Ollama's multimodal format:
+  // the user message gets an `images` array alongside the `content` text.
+  const visionMessages = [
+    { role: "system" as const, content: systemContent },
+    { role: "user" as const, content: prompt, images },
+  ];
+
+  // Force intent to "vision" so the router picks a vision-capable model
+  let resolvedModel = model;
+  if (!resolvedModel) {
+    try {
+      const route = await routeModelForMessages(
+        [{ role: "user", content: `vision analysis: ${prompt}` }],
+        undefined,
+      );
+      resolvedModel = route.selectedModel;
+    } catch {
+      resolvedModel = "llava";   // safe fallback
+    }
+  }
+
+  thoughtLog.publish({
+    category: "chat",
+    title: "Vision Analysis Request",
+    message: `Vision bridge activated — analysis type: ${analysis}, model: ${resolvedModel}, images: ${images.length}`,
+    metadata: { analysisType: analysis, model: resolvedModel, imageCount: images.length },
+  });
+
+  try {
+    const ollamaRes = await distributedFetchJson<{ message?: { content?: string }; model?: string }>(
+      "/api/chat",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: resolvedModel,
+          messages: visionMessages,
+          stream: false,
+        }),
+      },
+      120_000,
+    );
+
+    const responseText = ollamaRes.message?.content ?? "";
+    thoughtLog.publish({
+      category: "chat",
+      title: "Vision Analysis Complete",
+      message: `Vision bridge response (${responseText.length} chars) from model ${ollamaRes.model ?? resolvedModel}`,
+    });
+
+    return res.json({
+      success: true,
+      model: ollamaRes.model ?? resolvedModel,
+      message: responseText,
+      analysisType: analysis,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    thoughtLog.publish({
+      level: "error",
+      category: "chat",
+      title: "Vision Analysis Failed",
+      message: `Vision bridge error: ${msg}`,
+    });
+    return res.status(500).json({ success: false, message: msg });
+  }
 });
 
 export default router;

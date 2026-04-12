@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
@@ -15,6 +16,10 @@ import {
   Server,
   Sparkles,
   TerminalSquare,
+  Radio,
+  AlertTriangle,
+  XCircle,
+  Info,
 } from "lucide-react";
 
 type HealthResponse = {
@@ -81,6 +86,155 @@ type FeatureCardProps = {
   description: string;
   icon: typeof Sparkles;
 };
+
+// ── Thought Log SSE ───────────────────────────────────────────────────────────
+
+type ThoughtLevel = "info" | "warning" | "error" | "debug";
+
+interface ThoughtEntry {
+  id: string;
+  level: ThoughtLevel;
+  category: string;
+  title: string;
+  message: string;
+  timestamp: string;
+}
+
+const MAX_THOUGHT_ENTRIES = 80;
+
+function useThoughtLog() {
+  const [entries, setEntries] = useState<ThoughtEntry[]>([]);
+  const [connected, setConnected] = useState(false);
+  const esRef = useRef<EventSource | null>(null);
+
+  const connect = useCallback(() => {
+    if (esRef.current) {
+      esRef.current.close();
+    }
+    const es = new EventSource("/api/observability/thoughts/stream");
+    esRef.current = es;
+
+    es.addEventListener("open", () => setConnected(true));
+
+    // Bootstrap event — server sends recent history on connect
+    es.addEventListener("bootstrap", (e: MessageEvent) => {
+      try {
+        const bootstrapEntries = JSON.parse(e.data) as ThoughtEntry[];
+        setEntries(bootstrapEntries.slice(-MAX_THOUGHT_ENTRIES));
+      } catch { /* ignore malformed bootstrap */ }
+    });
+
+    // Individual thought events
+    es.addEventListener("thought", (e: MessageEvent) => {
+      try {
+        const entry = JSON.parse(e.data) as ThoughtEntry;
+        setEntries(prev => {
+          const next = [...prev, entry];
+          return next.length > MAX_THOUGHT_ENTRIES ? next.slice(-MAX_THOUGHT_ENTRIES) : next;
+        });
+      } catch { /* ignore malformed thought */ }
+    });
+
+    // Heartbeat — just confirms the stream is alive, no UI action needed
+    es.addEventListener("heartbeat", () => setConnected(true));
+
+    es.addEventListener("error", () => {
+      setConnected(false);
+      es.close();
+      esRef.current = null;
+      // Reconnect after 5 s
+      setTimeout(connect, 5000);
+    });
+  }, []);
+
+  useEffect(() => {
+    connect();
+    return () => {
+      esRef.current?.close();
+      esRef.current = null;
+    };
+  }, [connect]);
+
+  const clear = useCallback(() => setEntries([]), []);
+
+  return { entries, connected, clear };
+}
+
+// ── Thought Log Panel ─────────────────────────────────────────────────────────
+
+const LEVEL_STYLES: Record<ThoughtLevel, { bar: string; text: string; icon: typeof Info }> = {
+  info:    { bar: "bg-sky-400/70",    text: "text-sky-300",    icon: Info },
+  warning: { bar: "bg-amber-400/70",  text: "text-amber-300",  icon: AlertTriangle },
+  error:   { bar: "bg-rose-400/70",   text: "text-rose-300",   icon: XCircle },
+  debug:   { bar: "bg-slate-500/50",  text: "text-slate-400",  icon: Info },
+};
+
+function ThoughtLogPanel() {
+  const { entries, connected, clear } = useThoughtLog();
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to the bottom on new entries
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [entries.length]);
+
+  return (
+    <SectionPanel eyebrow="Sovereign Thought Log" title="Live decision stream">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-xs text-slate-400">
+          <Radio className={`h-3.5 w-3.5 ${connected ? "text-emerald-400 animate-pulse" : "text-slate-600"}`} />
+          {connected ? "SSE stream active" : "Reconnecting…"}
+        </div>
+        <button
+          onClick={clear}
+          className="rounded-lg border border-white/8 bg-white/[0.03] px-3 py-1 text-xs text-slate-400 hover:text-white transition-colors"
+        >
+          Clear
+        </button>
+      </div>
+
+      <div className="h-80 overflow-y-auto rounded-[20px] border border-white/8 bg-slate-950/80 p-3 font-mono text-xs">
+        {entries.length === 0 ? (
+          <p className="flex h-full items-center justify-center text-slate-600">
+            {connected ? "Waiting for thought events…" : "Connecting to stream…"}
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {entries.map((entry) => {
+              const levelStyle = LEVEL_STYLES[entry.level] ?? LEVEL_STYLES.info;
+              const LevelIcon = levelStyle.icon;
+              const time = new Date(entry.timestamp).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              });
+              return (
+                <div
+                  key={entry.id}
+                  className="flex gap-2 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2"
+                >
+                  <div className={`mt-0.5 w-0.5 flex-shrink-0 rounded-full ${levelStyle.bar}`} />
+                  <LevelIcon className={`mt-0.5 h-3.5 w-3.5 flex-shrink-0 ${levelStyle.text}`} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="font-semibold text-white">{entry.title}</span>
+                      <span className="text-slate-500">[{entry.category}]</span>
+                      <span className="ml-auto text-slate-600">{time}</span>
+                    </div>
+                    <p className="mt-0.5 break-words text-slate-400">{entry.message}</p>
+                  </div>
+                </div>
+              );
+            })}
+            <div ref={bottomRef} />
+          </div>
+        )}
+      </div>
+    </SectionPanel>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 const FEATURE_COPY: Record<
   string,
@@ -512,9 +666,22 @@ export default function Dashboard() {
                 <Sparkles className="h-5 w-5 text-sky-200" />
               </div>
             </div>
+
+            <div className="rounded-[24px] border border-white/8 bg-white/[0.03] p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-white">/api/observability/thoughts/stream</p>
+                  <p className="mt-1 text-sm text-slate-400">Live SSE stream of sovereign kernel decisions.</p>
+                </div>
+                <Radio className="h-5 w-5 text-sky-200" />
+              </div>
+            </div>
           </div>
         </SectionPanel>
       </div>
+
+      {/* Live Thought Log — full-width below the grid */}
+      <ThoughtLogPanel />
     </div>
   );
 }
